@@ -24,7 +24,161 @@
     <h4>Huggingface</h4>
     The model is deployed on <a href="https://huggingface.co/spaces/sachiniyer/toxic-tweets">huggingface</a>
     <h2>How does it work?</h2>
-    <h3>A video explanation</h3>
+    <h3>A high level video explanation</h3>
+    <video width="560" height="340" controls>
+        <source src="https://raw.githubusercontent.com/sachiniyer/toxic-tweets/main/video.mp4"
+            type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+    </video>
+    <h3>A technical textual explanation</h3>
+    <h4>I will go through a more in depth explanation of the code (however I will be skipping stuff like imports and
+        sanity checks)</h4>
+    <ol>
+
+        <li>
+            First you must create the tokenizer. This is what is going to take the text that we have and actually embed
+            it into tokens for us to train on.
+            <pre>
+                <code>
+tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased', \
+                                    truncation=True, do_lower_case=True)
+                </code>
+            </pre>
+
+        </li>
+
+        <li>
+            Then we do some data wrangling in order to make our dataframe easier to work with. This mostly means getting
+            rid of columns we don't want as well as one-shot encoding the labels
+            <pre>
+                <code>
+classes = list(df.columns)[2:]
+df['labels'] = df.iloc[:, 2:].values.tolist()
+df['text'] = df['comment_text']
+df.drop(['id', 'comment_text'], inplace=True, axis=1)
+df.drop(classes, inplace=True, axis=1)
+df.head()
+                </code>
+            </pre>
+        </li>
+
+        <li>
+            We then create a class which is used for encoding. We will break this up into multiple parts
+            <ol>
+                <li>
+                    First we have our initialization function which includes the tokenizer that we created before, as
+                    well
+                    as the dataframe we are operating on, and the max-length we would like our input_id vector to be.
+                    <pre> <code>
+def __init__(self, df, tokenizer, max_len):
+    self.tokenizer = tokenizer
+    self.df = df
+    self.texts = df.text
+    self.targets = self.df.labels
+    self.max_len = max_len
+                    </code> </pre>
+                </li>
+                <li>
+                    Then we do three things. First we get rid of bad whitespace (newlines, tabs, etc.). Then we create a
+                    tokenizer that will parse the inputs and return all of the values that we want back. Then we convert
+                    those values into tensors, and finally, we return them from the function
+
+                    We will create both validation and training datasets from this class.
+                    <pre>
+                        <code>
+def __getitem__(self, index):
+    text = str(self.texts[index])
+    text = " ".join(text.split())
+
+    inputs = self.tokenizer.encode_plus(
+        text,
+        None,
+        add_special_tokens=True,
+        max_length=self.max_len,
+        pad_to_max_length=True,
+        return_token_type_ids=True,
+        truncation=True,
+        return_attention_mask=True,
+    )
+    ids = torch.LongTensor(inputs['input_ids'])
+    mask = torch.LongTensor(inputs['attention_mask'])
+    token_type_ids = torch.LongTensor(inputs['token_type_ids'])
+    targets = torch.FloatTensor(self.targets[index])
+
+    return {
+        'ids': ids,
+        'mask': mask,
+        'token_type_ids': token_type_ids,
+        'targets': targets,
+        'text': text
+    }
+
+                        </code>
+                    </pre>
+                </li>
+
+            </ol>
+        </li>
+
+        <li>
+            Then we actually create the model. I decided to use a sequence classification version of bert for my model
+            so that it would more accurately represent the problem. I also defined the number of labels, and possibly
+            most importantly, I defined the problem_type. This is essential to working with the transformers library,
+            because otherwise you will have all of your values softmaxed when you don't want them to be.
+            <pre>
+                <code>
+model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased', num_labels=6, problem_type="multi_label_classification")
+model.to(device)
+                </code>
+            </pre>
+        </li>
+
+        <li>
+            Now, we actually create the optimizer and loss functions to use during our training. The optimizer is used
+            to update the model parameters in accordance with the loss function that we have. The specific optimizer
+            choosen - AdamW also takes into account weight decay which is useful to make sure that we don't overfit on
+            our data.
+
+            The loss function is also for binary cross entropy instead of regular cross entropy so that means it can
+            handle the binary data better.
+            <pre>
+                <code>
+optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+loss = torch.nn.BCEWithLogitsLoss()
+                </code>
+            </pre>
+        </li>
+
+        <li>
+            Then we actually train our model. A few things happen here. First we get the data from the dataloader we
+            created earlier (this is actually a batch of data and contains multiple samples). Then we extract all the
+            information that we will use to train our model - input_ids, attention_masks, and the optimal labels. We can
+            then use this to train our model, and update our optimizer in accordance with the loss function.
+            <pre>
+                <code>
+def train(epoch):
+    model.train()
+    for i,data in tqdm(enumerate(df_train, 0)):
+        ids = data['ids'].to(device, dtype = torch.long)
+        mask = data['mask'].to(device, dtype = torch.long)
+        token_type_ids = data['token_type_ids'].to(device, dtype = torch.long)
+        targets = data['targets'].to(device, dtype = torch.float)
+        optimizer.zero_grad()
+        out = model(input_ids=ids, attention_mask=mask, labels=targets)
+
+        if i%100==0: print(f'epoch: {epoch} | loss: {out[0].item()}')
+
+        out[0].backward()
+        optimizer.step()
+                </code>
+            </pre>
+
+        </li>
+        <li>
+            Lastly, we can do some validation and exporting of the model, but that is somewhat verbose code, and does
+            not seem like it needs explation. After this previous step you can save the model and get a very similar
+            result as I did in my project.
+        </li>
+    </ol>
 </body>
 
 </html>
